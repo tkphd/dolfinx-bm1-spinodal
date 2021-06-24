@@ -1,48 +1,50 @@
 # -*- coding: utf-8 -*-
+
 # mpirun -np 4 --mca opal_cuda_support 0 python cahn-hilliard.py
 
-"""The Cahn-Hilliard equation is a fourth-order equation, so casting it in a
-weak form would result in the presence of second-order spatial derivatives, and
-the problem could not be solved using a standard Lagrange finite element basis.
-A solution is to rephrase the problem as two coupled second-order equations.
-The unknown fields are c and μ.
+"""
+ 𝔉 = ∫{𝐹 + 0.5⋅𝜅⋅|∇𝑐|²}⋅d𝛺
+ 𝐹 = 𝜌⋅(𝑐 - 𝛼)²⋅(𝛽 - 𝑐)²
 
-* Ω=(0,1)×(0,1) (unit square)
-* f=100c²(1−c)²
-* λ=1×10⁻²
-* M=1
-* dt=5×10⁻⁶
-* θ=0.5
+ ∂𝑐/∂𝑡= ∇⋅{𝑀 ∇(𝑓 - 𝜅∇²𝑐)}
 
+ 𝛺 = (0,200)×(0,200) (unit square)
 """
 
-import numpy as np
-import os
+from numpy import array, cos
 
 from dolfinx import (Form, Function, FunctionSpace, NewtonSolver,
-                     UnitSquareMesh, fem, log, plot)
+                     RectangleMesh, fem, log, plot)
 from dolfinx.cpp.mesh import CellType
 from dolfinx.fem.assemble import assemble_matrix, assemble_vector
 from dolfinx.io import XDMFFile
 from mpi4py import MPI
 from petsc4py import PETSc
-from ufl import (FiniteElement, TestFunctions, TrialFunction, derivative, diff,
-                 dx, grad, inner, split, variable)
+from ufl import (FiniteElement, Measure, TestFunctions, TrialFunction,
+                 derivative, diff, grad, inner, split, variable)
 
 rank = MPI.COMM_WORLD.Get_rank()
 
 # Model parameters
-λ = 1.0e-2 # surface parameter
-dt = 5.0e-6 # timestep
-θ = 0.5    # Crank-Nicolson
+𝜅 = 2    # gradient energy coefficient
+𝜌 = 5    # well height
+𝛼 = 0.3  # eqm composition of phase 1
+𝛽 = 0.7  # eqm composition of phase 2
+𝜁 = 0.5  # system composition
+𝑀 = 5    # interface mobility
+𝜀 = 0.01 # noise amplitude
+
+# Discretization parameters
+𝐿 = 200 # width
+𝑁 = 128 # cells
+Δ𝑡= 1   # timestep
+
+p_deg = 2 # element/polynomial degree
+q_deg = 4 # quadrature_degree
 
 # Output
 log.set_output_file("dolfinx-spinodal.log")
 hdf = XDMFFile(MPI.COMM_WORLD, "dolfinx-spinodal.xdmf", "w")
-
-"""
-CahnHilliardEquation: a subclass of NonlinearProblem invoking the Newton solver
-"""
 
 class CahnHilliardEquation:
     def __init__(self, a, L):
@@ -71,11 +73,15 @@ class CahnHilliardEquation:
         return fem.create_vector(self.L)
 
 # Create mesh & element basis
-Ω = UnitSquareMesh(MPI.COMM_WORLD, 96, 96, CellType.triangle) # mesh
-LE = FiniteElement("Lagrange", Ω.ufl_cell(), 1)
+𝛺 = RectangleMesh(MPI.COMM_WORLD,
+                  [array([0,0,0]), array([𝐿,𝐿,0])],
+                  [𝑁,𝑁], CellType.triangle)
+LE = FiniteElement("Lagrange", 𝛺.ufl_cell(), p_deg)
+
+dx = Measure("dx", metadata={"quadrature_degree": q_deg})
 
 # Create the function space from both the mesh and the element
-FS = FunctionSpace(Ω, LE * LE)
+FS = FunctionSpace(𝛺, LE * LE)
 
 # Build the solution, trial, and test functions
 u  = Function(FS) # current solution
@@ -93,22 +99,30 @@ c0, μ0 = split(u0)
 with u.vector.localForm() as x:
     x.set(0.0)
 
-noisy = lambda x: 0.63 + 0.02 * (0.5 - np.random.rand(x.shape[1]))
+noisy = lambda x: 𝜁 + 𝜀 * ( cos(0.105*x[0]) * cos(0.11*x[1])
+                          + (cos(0.13*x[0]) * cos(0.087*x[1]))**2
+                          + cos(0.025*x[0] - 0.15*x[1])
+                            * cos(0.07*x[0] - 0.02*x[1])
+)
+
 u.sub(0).interpolate(noisy)
 
-# ChemPot
-c = variable(c) # declare this as a variable things can be differentiated wrt
-f = 100 * c**2 * (1 - c)**2
-dfdc = diff(f, c)
+c = variable(c)
+𝐹 = 𝜌 * (c - 𝛼)**2 * (𝛽 - c)**2
+dfdc = diff(𝐹, c)
 
 # === Weak Form ===
 
 # Half-stepping parameter for Crank-Nicolson
-μ_mid = (1.0 - θ) * μ0 + θ * μ
+𝜃 = 0.5  # Crank-Nicolson parameter
+μ_mid = (1 - 𝜃) * μ0 + 𝜃 * μ
 
-# Discretization in UFL syntax
-L0 = inner(c, q) * dx - inner(c0, q) * dx + dt * inner(grad(μ_mid), grad(q)) * dx
-L1 = inner(μ, v) * dx - inner(dfdc, v) * dx - λ * inner(grad(c), grad(v)) * dx
+# Time discretization in UFL syntax
+# (c0 is the previous timestep)
+L0 = inner(c, q) * dx - inner(c0, q) * dx \
+   + Δ𝑡 * inner(grad(μ_mid), grad(q)) * dx
+L1 = inner(μ, v) * dx - inner(dfdc, v) * dx \
+   - 𝜅 * inner(grad(c), grad(v)) * dx
 L = L0 + L1
 
 # Jacobian of L
@@ -127,9 +141,9 @@ solver.rtol = 1e-6
 # Prepare for timestepping
 
 t = 0.0
-T = 50 * dt
+T = 100
 
-hdf.write_mesh(Ω)
+hdf.write_mesh(𝛺)
 u.vector.copy(result=u0.vector)
 u0.vector.ghostUpdate(addv=PETSc.InsertMode.INSERT,
                       mode=PETSc.ScatterMode.FORWARD)
@@ -137,10 +151,10 @@ u0.vector.ghostUpdate(addv=PETSc.InsertMode.INSERT,
 # === TIMESTEPPING ===
 
 while (t < T):
-    t += dt
+    t += Δ𝑡
     r = solver.solve(u.vector)
     if rank == 0:
-        print("Step {:6d}: {:6d} iterations".format(int(t / dt), r[0]))
+        print("Step {:6d}: {:6d} iterations".format(int(t / Δ𝑡), r[0]))
     u.vector.copy(result=u0.vector)
     hdf.write_function(u.sub(0), t)
 

@@ -1,1 +1,4 @@
+*.h5
+*.log
 *.pyc
+*.xdmf
