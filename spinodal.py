@@ -13,8 +13,8 @@
 
 import csv
 import gc
-
 import numpy as np
+import queue
 
 from dolfinx import (Form, Function, FunctionSpace, NewtonSolver,
                      RectangleMesh, fem, log, plot)
@@ -173,19 +173,25 @@ if rank == 0:
         summary = [0, 𝓕, Δ𝜇, 0, 0]
         io.writerow(summary)
 
-i = 0
 t = 0.0
 Δ𝜇 = 1
-io_interval = 1 / Δ𝑡
+
+io_q = queue.Queue()
+for x in (0.1, 0.2, 0.5):
+    io_q.put(x)
+for n in np.arange(0, 7):
+    for x in np.arange(1, 10):
+        io_q.put(x * 10**n)
+
+io_t = io_q.get()
 
 start = MPI.Wtime()
 
-while (Δ𝜇 > 1e-8 and t < 1e6):
+while Δ𝜇 > 1e-8 and t < (1.5 * Δ𝑡 + 1e6):
     t += Δ𝑡
-    i += 1
     r = solver.solve(u.vector)
 
-    if i == io_interval:
+    if t >= io_t:
         hdf.write_function(u.sub(0), t)
         𝓕 = assemble_scalar((𝜌 * (c - 𝛼)**2 * (𝛽 - c)**2) * dx) \
           + assemble_scalar(0.5 * 𝜅 * inner(grad(c), grad(c)) * dx)
@@ -200,11 +206,10 @@ while (Δ𝜇 > 1e-8 and t < 1e6):
                 io = csv.writer(nrg_file)
                 io.writerow(summary)
 
-        i = 0
-        io_interval = np.amax([io_interval, 10 ** int(np.log10(t)) / Δ𝑡])
+        gc.collect()
+        io_t = io_q.get()
 
     u.vector.copy(result=u0.vector)
-    gc.collect()
 
 𝓕 = assemble_scalar((𝜌 * (c - 𝛼)**2 * (𝛽 - c)**2) * dx) \
   + assemble_scalar(0.5 * 𝜅 * inner(grad(c), grad(c)) * dx)
