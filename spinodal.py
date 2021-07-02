@@ -28,6 +28,7 @@ from petsc4py import PETSc
 from ufl import FiniteElement, Measure, TestFunctions, TrialFunction
 from ufl import  derivative, diff, dx, grad, inner, split, variable
 
+epoch = mpf(MPI.Wtime())
 mp.pretty = True
 
 # Model parameters
@@ -198,13 +199,13 @@ if rank == 0:
 io_t = io_q.get()
 
 if rank == 0:
-    print("Next summary at {}".format(io_t))
+    print("[{}] Next summary at 𝑡={}".format(mpf(MPI.Wtime()) - epoch, io_t))
 
 while (Δ𝜇 > 1e-8) and (𝑡 < 𝑇):
     𝑡 += mpf(Δ𝑡)
     r = solver.solve(u.vector)[0]
 
-    if 𝑡 >= io_t:
+    if mp.almosteq(𝑡, io_t, 0.1 * mpf(Δ𝑡)) or 𝑡 > io_t:
         summary = crunch_the_numbers(𝑡, 𝑐, 𝜇, 𝜆, r, start)
         hdf.write_function(u.sub(0), 𝑡)
 
@@ -217,7 +218,7 @@ while (Δ𝜇 > 1e-8) and (𝑡 < 𝑇):
         io_t = io_q.get()
 
         if rank == 0:
-            print("Next summary at {}".format(io_t))
+            print("[{}] Next summary at 𝑡={}".format(mpf(MPI.Wtime()) - epoch, io_t))
         gc.collect()
 
 
@@ -230,3 +231,5 @@ if rank == 0:
         io.writerow(summary)
 
 hdf.close()
+
+print("Finished simulation after {} s.".format(mpf(MPI.Wtime()) - epoch))
