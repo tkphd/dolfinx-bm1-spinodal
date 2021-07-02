@@ -43,7 +43,7 @@ mp.pretty = True
 # Discretization parameters
 𝐿 = 200  # width
 𝑁 = 400  # cells
-Δ𝑡 = 0.1 # timestep
+Δ𝑡 = 0.125 # timestep
 𝑇 = 1e6  # simulation timeout
 
 p_deg = 2 # element/polynomial degree
@@ -158,12 +158,13 @@ u0.vector.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWA
 
 # Enqueue output timestamps
 io_q = queue.Queue()
-for t_out in (0.1, 0.2, 0.5):
+for t_out in (Δ𝑡, 2*Δ𝑡, 5*Δ𝑡):
     io_q.put(t_out)
-for n in np.arange(0, 6):
-    for m in np.arange(1, 11):
-        t_out = m * 10 ** n
-        io_q.put(t_out)
+for n in np.arange(0, 7):
+    for m in np.arange(1, 10):
+        t_out = mpf(m * 10.0 ** n)
+        if (t_out <= 𝑇):
+            io_q.put(t_out)
 
 # Endpoint detection based on Δ𝜇 is borrowed from @smondal44,
 # <https://github.com/smondal44/spinodal-decomposition>
@@ -205,7 +206,7 @@ while (Δ𝜇 > 1e-8) and (𝑡 < 𝑇):
     𝑡 += mpf(Δ𝑡)
     r = solver.solve(u.vector)[0]
 
-    if mp.almosteq(𝑡, io_t, 0.1 * mpf(Δ𝑡)) or 𝑡 > io_t:
+    if mp.almosteq(𝑡, io_t) or 𝑡 > io_t:
         summary = crunch_the_numbers(𝑡, 𝑐, 𝜇, 𝜆, r, start)
         hdf.write_function(u.sub(0), 𝑡)
 
