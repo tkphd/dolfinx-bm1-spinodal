@@ -13,18 +13,22 @@
 
 import csv
 import gc
+from mpmath import mp, mpf
 import numpy as np
 import queue
 
-from dolfinx import (Form, Function, FunctionSpace, NewtonSolver,
-                     RectangleMesh, fem, log, plot)
+from dolfinx import Form, Function, FunctionSpace, NewtonSolver, RectangleMesh
+from dolfinx import fem, log
+
 from dolfinx.cpp.mesh import CellType
 from dolfinx.fem.assemble import assemble_matrix, assemble_scalar, assemble_vector
 from dolfinx.io import XDMFFile
 from mpi4py import MPI
 from petsc4py import PETSc
-from ufl import (Constant, FiniteElement, Measure, TestFunctions, TrialFunction,
-                 derivative, diff, dx, grad, inner, split, variable)
+from ufl import FiniteElement, Measure, TestFunctions, TrialFunction
+from ufl import  derivative, diff, dx, grad, inner, split, variable
+
+mp.pretty = True
 
 # Model parameters
 𝜅 = 2    # gradient energy coefficient
@@ -36,9 +40,10 @@ from ufl import (Constant, FiniteElement, Measure, TestFunctions, TrialFunction,
 𝜀 = 0.01 # noise amplitude
 
 # Discretization parameters
-𝐿 = 200 # width
-𝑁 = 400 # cells
-Δ𝑡= 0.1 # timestep
+𝐿 = 200  # width
+𝑁 = 400  # cells
+Δ𝑡 = 0.1 # timestep
+𝑇 = 1e6  # simulation timeout
 
 p_deg = 2 # element/polynomial degree
 q_deg = 4 # quadrature_degree
@@ -48,20 +53,19 @@ log.set_output_file("dolfinx-spinodal.log")
 pfhub_log = "dolfinx-bm-1b.csv"
 hdf = XDMFFile(MPI.COMM_WORLD, "dolfinx-spinodal.xdmf", "w")
 
+
 class CahnHilliardEquation:
     def __init__(self, a, L):
         self.L, self.a = Form(L), Form(a)
 
     def form(self, x):
-        x.ghostUpdate(addv=PETSc.InsertMode.INSERT,
-                      mode=PETSc.ScatterMode.FORWARD)
+        x.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
 
     def F(self, x, b):
         with b.localForm() as f:
             f.set(0.0)
         assemble_vector(b, self.L)
-        b.ghostUpdate(addv=PETSc.InsertMode.ADD,
-                      mode=PETSc.ScatterMode.REVERSE)
+        b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
 
     def J(self, x, A):
         A.zeroEntries()
@@ -74,57 +78,49 @@ class CahnHilliardEquation:
     def vector(self):
         return fem.create_vector(self.L)
 
-# Create mesh & element basis
-𝛺 = RectangleMesh(MPI.COMM_WORLD,
-                  [np.array([0,0,0]), np.array([𝐿,𝐿,0])],
-                  [𝑁,𝑁], CellType.triangle)
-LE = FiniteElement("Lagrange", 𝛺.ufl_cell(), p_deg)
 
-# dx = Measure("dx", metadata={"quadrature_degree": q_deg})
+# Create mesh & element basis
+𝛺 = RectangleMesh(
+    MPI.COMM_WORLD,
+    [np.array([0, 0, 0]), np.array([𝐿, 𝐿, 0])],
+    [𝑁, 𝑁],
+    CellType.triangle,
+)
+
+MPI_COMM_WORLD = 𝛺.mpi_comm()
+rank = MPI_COMM_WORLD.Get_rank()
+
+LE = FiniteElement("Lagrange", 𝛺.ufl_cell(), p_deg)
 
 # Create the function space from both the mesh and the element
 FS = FunctionSpace(𝛺, LE * LE)
 
 # Build the solution, trial, and test functions
-u  = Function(FS) # current solution
-u0 = Function(FS) # previous solution
+u = Function(FS)  # current solution
+u0 = Function(FS)  # previous solution
 du = TrialFunction(FS)
 q, v = TestFunctions(FS)
 
 # Mixed functions
-c, μ = split(u) # references to components of u for clear, direct access
-dc, dμ = split(du)
-c0, μ0 = split(u0)
+𝑐, 𝜇 = split(u)  # references to components of u for clear, direct access
+d𝑐, d𝜇 = split(du)
+# 𝑏, 𝜆 are the previous values for 𝑐, 𝜇
+𝑏, 𝜆 = split(u0)
 
-# === Initial Conditions ===
-
-with u.vector.localForm() as x:
-    x.set(0.0)
-
-noisy = lambda x: 𝜁 + 𝜀 * ( np.cos(0.105*x[0]) * np.cos(0.11*x[1])
-                          + (np.cos(0.13*x[0]) * np.cos(0.087*x[1]))**2
-                          + np.cos(0.025*x[0] - 0.15*x[1])
-                            * np.cos(0.07*x[0] - 0.02*x[1])
-)
-
-u.sub(0).interpolate(noisy)
-
-c = variable(c)
-𝐹 = 𝜌 * (c - 𝛼)**2 * (𝛽 - c)**2
-dfdc = diff(𝐹, c)
+𝑐 = variable(𝑐)
+𝐹 = 𝜌 * (𝑐 - 𝛼) ** 2 * (𝛽 - 𝑐) ** 2
+dfdc = diff(𝐹, 𝑐)
 
 # === Weak Form ===
 
 # Half-stepping parameter for Crank-Nicolson
 𝜃 = 0.5  # Crank-Nicolson parameter
-μ_mid = (1 - 𝜃) * μ0 + 𝜃 * μ
+𝜇_mid = (1 - 𝜃) * 𝜆 + 𝜃 * 𝜇
 
 # Time discretization in UFL syntax
-# (c0 is the previous timestep)
-L0 = inner(c, q) * dx - inner(c0, q) * dx \
-   + Δ𝑡 * inner(grad(μ_mid), grad(q)) * dx
-L1 = inner(μ, v) * dx - inner(dfdc, v) * dx \
-   - 𝜅 * inner(grad(c), grad(v)) * dx
+# (𝑏 is the previous timestep)
+L0 = inner(𝑐, q) * dx - inner(𝑏, q) * dx + Δ𝑡 * inner(grad(𝜇_mid), grad(q)) * dx
+L1 = inner(𝜇, v) * dx - inner(dfdc, v) * dx - 𝜅 * inner(grad(𝑐), grad(v)) * dx
 L = L0 + L1
 
 # Jacobian of L
@@ -140,93 +136,97 @@ solver.set_form(problem.form)
 solver.convergence_criterion = "incremental"
 solver.rtol = 1e-6
 
-# Prepare for timestepping
+# === Initial Conditions ===
+
+with u.vector.localForm() as x:
+    x.set(0.0)
+
+noisy = lambda x: 𝜁 + 𝜀 * (
+    np.cos(0.105 * x[0]) * np.cos(0.11 * x[1])
+    + (np.cos(0.13 * x[0]) * np.cos(0.087 * x[1])) ** 2
+    + np.cos(0.025 * x[0] - 0.15 * x[1]) * np.cos(0.07 * x[0] - 0.02 * x[1])
+)
+
+u.sub(0).interpolate(noisy)
 
 hdf.write_mesh(𝛺)
 u.vector.copy(result=u0.vector)
-u0.vector.ghostUpdate(addv=PETSc.InsertMode.INSERT,
-                      mode=PETSc.ScatterMode.FORWARD)
+u0.vector.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
 
 # === TIMESTEPPING ===
 
-MPI_COMM_WORLD = 𝛺.mpi_comm()
-rank = MPI_COMM_WORLD.Get_rank()
+# Enqueue output timestamps
+io_q = queue.Queue()
+for t_out in (0.1, 0.2, 0.5):
+    io_q.put(t_out)
+for n in np.arange(0, 6):
+    for m in np.arange(1, 11):
+        t_out = m * 10 ** n
+        io_q.put(t_out)
 
 # Endpoint detection based on Δ𝜇 is borrowed from @smondal44,
 # <https://github.com/smondal44/spinodal-decomposition>
 
-𝑛 = MPI_COMM_WORLD.allreduce(len(𝛺.geometry.x), op=MPI.SUM)
+𝑡 = mpf(0.0)
+𝑛 = mpf(MPI_COMM_WORLD.allreduce(len(𝛺.geometry.x), op=MPI.SUM))
 
-𝓕 = assemble_scalar((𝜌 * (c - 𝛼)**2 * (𝛽 - c)**2) * dx) \
-  + assemble_scalar(0.5 * 𝜅 * inner(grad(c), grad(c)) * dx)
-Δ𝜇 = assemble_scalar(np.abs(μ - μ0) * dx)
+start = mpf(MPI.Wtime())
 
-𝓕 = MPI_COMM_WORLD.allreduce(𝓕, op=MPI.SUM)
-Δ𝜇 = MPI_COMM_WORLD.allreduce(Δ𝜇 / 𝑛, op=MPI.SUM)
+def crunch_the_numbers(𝑡, 𝑐, 𝜇, 𝜆, r, t0):
+    𝓕 = assemble_scalar(𝜌 * (𝑐 - 𝛼) ** 2 * (𝛽 - 𝑐) ** 2 * dx \
+                        + 0.5 * 𝜅 * inner(grad(𝑐), grad(𝑐)) * dx)
+
+    Δ𝜇= assemble_scalar(np.abs(𝜇 - 𝜆) * dx)
+
+    𝓕 = mpf(MPI_COMM_WORLD.allreduce(𝓕, op=MPI.SUM))
+    Δ𝜇= mpf(MPI_COMM_WORLD.allreduce(Δ𝜇 / 𝑛, op=MPI.SUM))
+    r = MPI_COMM_WORLD.allreduce(r, op=MPI.MAX)
+
+    return (𝑡, 𝓕, Δ𝜇, r, mpf(MPI.Wtime()) - t0)
+
+summary = crunch_the_numbers(𝑡, 𝑐, 𝜇, 𝜆, 0, start)
 
 if rank == 0:
-    with open(pfhub_log, mode='w') as nrg_file:
-        header = ["time", "free_energy", "driving_force", "iterations", "runtime"]
+    with open(pfhub_log, mode="w") as nrg_file:
         io = csv.writer(nrg_file)
-        io.writerow(header)
 
-        summary = [0, 𝓕, Δ𝜇, 0, 0]
+        header = ["time", "free_energy", "driving_force", "iterations", "runtime"]
+        io.writerow(header)
         io.writerow(summary)
 
-t = 0.0
-Δ𝜇 = 1
-
-io_q = queue.Queue()
-for x in (0.1, 0.2, 0.5):
-    io_q.put(x)
-for n in np.arange(0, 7):
-    for x in np.arange(1, 10):
-        io_q.put(x * 10**n)
-
+Δ𝜇 = 1.0
 io_t = io_q.get()
 
-start = MPI.Wtime()
+if rank == 0:
+    print("Next summary at {}".format(io_t))
 
-while Δ𝜇 > 1e-8 and t < (1.5 * Δ𝑡 + 1e6):
-    t += Δ𝑡
-    r = solver.solve(u.vector)
+while (Δ𝜇 > 1e-8) and (𝑡 < 𝑇):
+    𝑡 += mpf(Δ𝑡)
+    r = solver.solve(u.vector)[0]
 
-    if t >= io_t:
-        hdf.write_function(u.sub(0), t)
-        𝓕 = assemble_scalar((𝜌 * (c - 𝛼)**2 * (𝛽 - c)**2) * dx) \
-          + assemble_scalar(0.5 * 𝜅 * inner(grad(c), grad(c)) * dx)
-        Δ𝜇 = assemble_scalar(np.abs(μ - μ0) * dx)
-
-        𝓕 = MPI_COMM_WORLD.allreduce(𝓕, op=MPI.SUM)
-        Δ𝜇 = MPI_COMM_WORLD.allreduce(Δ𝜇 / 𝑛, op=MPI.SUM)
+    if 𝑡 >= io_t:
+        summary = crunch_the_numbers(𝑡, 𝑐, 𝜇, 𝜆, r, start)
+        hdf.write_function(u.sub(0), 𝑡)
 
         if rank == 0:
-            with open(pfhub_log, mode='a') as nrg_file:
-                summary = [t, 𝓕, Δ𝜇, r[0], MPI.Wtime() - start]
+            with open(pfhub_log, mode="a") as nrg_file:
                 io = csv.writer(nrg_file)
                 io.writerow(summary)
 
-        gc.collect()
+        u.vector.copy(result=u0.vector)
         io_t = io_q.get()
 
-    u.vector.copy(result=u0.vector)
+        if rank == 0:
+            print("Next summary at {}".format(io_t))
+        gc.collect()
 
-𝓕 = assemble_scalar((𝜌 * (c - 𝛼)**2 * (𝛽 - c)**2) * dx) \
-  + assemble_scalar(0.5 * 𝜅 * inner(grad(c), grad(c)) * dx)
-Δ𝜇 = assemble_scalar(np.abs(μ - μ0) * dx)
 
-𝓕 = MPI_COMM_WORLD.allreduce(𝓕, op=MPI.SUM)
-Δ𝜇 = MPI_COMM_WORLD.allreduce(Δ𝜇 / 𝑛, op=MPI.SUM)
+hdf.write_function(u.sub(0), 𝑡)
 
-hdf.write_function(u.sub(0), t)
+summary = crunch_the_numbers(𝑡, 𝑐, 𝜇, 𝜆, r, start)
 if rank == 0:
-    with open(pfhub_log, mode='a') as nrg_file:
-        summary = [t, 𝓕, Δ𝜇, r[0], MPI.Wtime() - start]
+    with open(pfhub_log, mode="a") as nrg_file:
         io = csv.writer(nrg_file)
         io.writerow(summary)
 
 hdf.close()
-
-# === VISUALIZATION ===
-
-# Open the XDMF file (XML-HDF5) in VisIT, ParaView, or equivalent tool.

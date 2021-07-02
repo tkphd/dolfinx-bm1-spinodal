@@ -9,4 +9,4 @@ spinodal: spinodal.py
 	mpirun -np $(RANKS) --mca opal_cuda_support 0 python spinodal.py
 
 clean:
-	rm -vf *spinodal.h5 *spinodal.xdmf *spinodal.log
+	rm -vf *spinodal.h5 *spinodal.xdmf *spinodal.log dolfinx*.csv
