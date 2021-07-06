@@ -8,6 +8,22 @@ The basic code for this implementation is lifted from the
 Cahn-Hilliard example provided by the [DOLFINx Docs](
 https://docs.fenicsproject.org/dolfinx/main/python/demos/cahn-hilliard/demo_cahn-hilliard.py.html).
 
+I use the Spack package for ease of installation. Note that
+it requires a relatively new version of GCC: I have found
+`gcc-10.3.0` works well. To install it, do
+
+```bash
+$ spack install gcc@10.3.0
+$ spack compiler add $(spack location -i gcc@10.3.0)
+$ spack compiler find
+```
+
+Then you should be able to follow the [Spack instructions](
+https://github.com/FEniCS/dolfinx#spack) without too much
+more difficulty.
+
+## DOLFINx-MPC
+
 Visit the [DOLFINx MPC repo](https://github.com/jorgensd/dolfinx_mpc)
 for details on installation. Docker is preferred. `cd` to your preferred
 working directory, then invoke
