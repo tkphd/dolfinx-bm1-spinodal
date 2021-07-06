@@ -43,7 +43,7 @@ mp.pretty = True
 # Discretization parameters
 𝐿 = 200  # width
 𝑁 = 400  # cells
-Δ𝑡 = 0.125 # timestep
+Δ𝑡 = 0.1 # timestep
 𝑇 = 1e6  # simulation timeout
 
 p_deg = 2 # element/polynomial degree
@@ -158,7 +158,7 @@ u0.vector.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWA
 
 # Enqueue output timestamps
 io_q = queue.Queue()
-for t_out in (Δ𝑡, 2*Δ𝑡, 5*Δ𝑡):
+for t_out in np.arange(0.1, 1, 0.1):
     io_q.put(t_out)
 for n in np.arange(0, 7):
     for m in np.arange(1, 10):
@@ -206,7 +206,7 @@ while (Δ𝜇 > 1e-8) and (𝑡 < 𝑇):
     𝑡 += mpf(Δ𝑡)
     r = solver.solve(u.vector)[0]
 
-    if mp.almosteq(𝑡, io_t) or 𝑡 > io_t:
+    if mp.almosteq(𝑡, io_t, DOLFIN_EPS) or (𝑡 > io_t):
         summary = crunch_the_numbers(𝑡, 𝑐, 𝜇, 𝜆, r, start)
         hdf.write_function(u.sub(0), 𝑡)
 
@@ -216,10 +216,12 @@ while (Δ𝜇 > 1e-8) and (𝑡 < 𝑇):
                 io.writerow(summary)
 
         u.vector.copy(result=u0.vector)
+
         io_t = io_q.get()
 
         if rank == 0:
             print("[{}] Next summary at 𝑡={}".format(mpf(MPI.Wtime()) - epoch, io_t))
+
         gc.collect()
 
 
