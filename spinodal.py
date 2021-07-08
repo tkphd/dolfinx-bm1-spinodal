@@ -13,7 +13,6 @@
 
 import csv
 import gc
-from mpmath import mp, mpf
 import numpy as np
 import queue
 
@@ -21,6 +20,7 @@ from dolfinx import Form, Function, FunctionSpace, NewtonSolver, RectangleMesh
 from dolfinx import fem, log
 
 from dolfinx.cpp.mesh import CellType
+from dolfinx.fem.problem import NonlinearProblem
 from dolfinx.fem.assemble import assemble_matrix, assemble_scalar, assemble_vector
 from dolfinx.io import XDMFFile
 from mpi4py import MPI
@@ -28,8 +28,7 @@ from petsc4py import PETSc
 from ufl import FiniteElement, Measure, TestFunctions, TrialFunction
 from ufl import  derivative, diff, dx, grad, inner, split, variable
 
-epoch = mpf(MPI.Wtime())
-mp.pretty = True
+epoch = MPI.Wtime()
 
 # Model parameters
 𝜅 = 2    # gradient energy coefficient
@@ -55,18 +54,15 @@ pfhub_log = "dolfinx-bm-1b.csv"
 hdf = XDMFFile(MPI.COMM_WORLD, "dolfinx-spinodal.xdmf", "w")
 
 
+"""
 class CahnHilliardEquation:
     def __init__(self, a, L):
         self.L, self.a = Form(L), Form(a)
-
-    def form(self, x):
-        x.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
 
     def F(self, x, b):
         with b.localForm() as f:
             f.set(0.0)
         assemble_vector(b, self.L)
-        b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
 
     def J(self, x, A):
         A.zeroEntries()
@@ -78,7 +74,7 @@ class CahnHilliardEquation:
 
     def vector(self):
         return fem.create_vector(self.L)
-
+"""
 
 # Create mesh & element basis
 𝛺 = RectangleMesh(
@@ -86,6 +82,7 @@ class CahnHilliardEquation:
     [np.array([0, 0, 0]), np.array([𝐿, 𝐿, 0])],
     [𝑁, 𝑁],
     CellType.triangle,
+    diagonal="crossed"
 )
 
 MPI_COMM_WORLD = 𝛺.mpi_comm()
@@ -125,17 +122,25 @@ L1 = inner(𝜇, v) * dx - inner(dfdc, v) * dx - 𝜅 * inner(grad(𝑐), grad(v
 L = L0 + L1
 
 # Jacobian of L
-J = derivative(L, u, du)
+# J = derivative(L, u, du)
 
 # === Solver ===
 
-problem = CahnHilliardEquation(J, L)
-solver = NewtonSolver(MPI.COMM_WORLD)
-solver.setF(problem.F, problem.vector())
-solver.setJ(problem.J, problem.matrix())
-solver.set_form(problem.form)
+problem = NonlinearProblem(L, u)
+solver = NewtonSolver(MPI.COMM_WORLD, problem)
+#solver.setF(problem.F, problem.vector())
+#solver.setJ(problem.J, problem.matrix())
 solver.convergence_criterion = "incremental"
 solver.rtol = 1e-6
+
+# PETSc options
+ksp = solver.krylov_solver
+opts = PETSc.Options()
+option_prefix = ksp.getOptionsPrefix()
+opts[f"{option_prefix}ksp_type"] = "preonly"
+opts[f"{option_prefix}pc_type"] = "lu"
+opts[f"{option_prefix}pc_factor_mat_solver_type"] = "mumps"
+ksp.setFromOptions()
 
 # === Initial Conditions ===
 
@@ -162,17 +167,17 @@ for t_out in np.arange(0.1, 1, 0.1):
     io_q.put(t_out)
 for n in np.arange(0, 7):
     for m in np.arange(1, 10):
-        t_out = mpf(m * 10.0 ** n)
+        t_out = m * 10.0 ** n
         if (t_out <= 𝑇):
             io_q.put(t_out)
 
 # Endpoint detection based on Δ𝜇 is borrowed from @smondal44,
 # <https://github.com/smondal44/spinodal-decomposition>
 
-𝑡 = mpf(0.0)
-𝑛 = mpf(MPI_COMM_WORLD.allreduce(len(𝛺.geometry.x), op=MPI.SUM))
+𝑡 = 0.0
+𝑛 = MPI_COMM_WORLD.allreduce(len(𝛺.geometry.x), op=MPI.SUM)
 
-start = mpf(MPI.Wtime())
+start = MPI.Wtime()
 
 def crunch_the_numbers(𝑡, 𝑐, 𝜇, 𝜆, r, t0):
     𝓕 = assemble_scalar(𝜌 * (𝑐 - 𝛼) ** 2 * (𝛽 - 𝑐) ** 2 * dx \
@@ -180,11 +185,11 @@ def crunch_the_numbers(𝑡, 𝑐, 𝜇, 𝜆, r, t0):
 
     Δ𝜇= assemble_scalar(np.abs(𝜇 - 𝜆) * dx)
 
-    𝓕 = mpf(MPI_COMM_WORLD.allreduce(𝓕, op=MPI.SUM))
-    Δ𝜇= mpf(MPI_COMM_WORLD.allreduce(Δ𝜇 / 𝑛, op=MPI.SUM))
+    𝓕 = MPI_COMM_WORLD.allreduce(𝓕, op=MPI.SUM)
+    Δ𝜇= MPI_COMM_WORLD.allreduce(Δ𝜇 / 𝑛, op=MPI.SUM)
     r = MPI_COMM_WORLD.allreduce(r, op=MPI.MAX)
 
-    return (𝑡, 𝓕, Δ𝜇, r, mpf(MPI.Wtime()) - t0)
+    return (𝑡, 𝓕, Δ𝜇, r, MPI.Wtime() - t0)
 
 summary = crunch_the_numbers(𝑡, 𝑐, 𝜇, 𝜆, 0, start)
 
@@ -200,13 +205,14 @@ if rank == 0:
 io_t = io_q.get()
 
 if rank == 0:
-    print("[{}] Next summary at 𝑡={}".format(mpf(MPI.Wtime()) - epoch, io_t))
+    print("[{}] Next summary at 𝑡={}".format(MPI.Wtime() - epoch, io_t))
 
 while (Δ𝜇 > 1e-8) and (𝑡 < 𝑇):
-    𝑡 += mpf(Δ𝑡)
-    r = solver.solve(u.vector)[0]
+    𝑡 += Δ𝑡
+    r = solver.solve(u)[0]
+    u.vector.copy(result=u0.vector)
 
-    if mp.almosteq(𝑡, io_t, DOLFIN_EPS) or (𝑡 > io_t):
+    if 𝑡 >= io_t:
         summary = crunch_the_numbers(𝑡, 𝑐, 𝜇, 𝜆, r, start)
         hdf.write_function(u.sub(0), 𝑡)
 
@@ -215,12 +221,10 @@ while (Δ𝜇 > 1e-8) and (𝑡 < 𝑇):
                 io = csv.writer(nrg_file)
                 io.writerow(summary)
 
-        u.vector.copy(result=u0.vector)
-
         io_t = io_q.get()
 
         if rank == 0:
-            print("[{}] Next summary at 𝑡={}".format(mpf(MPI.Wtime()) - epoch, io_t))
+            print("[{}] Next summary at 𝑡={}".format(MPI.Wtime() - epoch, io_t))
 
         gc.collect()
 
@@ -235,4 +239,4 @@ if rank == 0:
 
 hdf.close()
 
-print("Finished simulation after {} s.".format(mpf(MPI.Wtime()) - epoch))
+print("Finished simulation after {} s.".format(MPI.Wtime() - epoch))
