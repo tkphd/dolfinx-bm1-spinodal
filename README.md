@@ -31,7 +31,7 @@ build using
 
 ```bash
 $ docker pull dolfinx/dolfinx
-$ docker run -ti -v $(pwd):/root/shared -w /root/shared dolfinx/dolfinx
+$ docker run -e PYTHONUNBUFFERED=1 -ti -v $(pwd):/root/shared -w /root/shared dolfinx/dolfinx
 ```
 
 ## DOLFINx-MPC
@@ -41,7 +41,7 @@ for details on installation. Docker is preferred. `cd` to your preferred
 working directory, then invoke
 
 ```bash
-$ docker run -ti -v $(pwd):/root/shared -w /root/shared dokken92/dolfinx_mpc:0.1.0
+$ docker run -e PYTHONUNBUFFERED=1 -ti -v $(pwd):/root/shared -w /root/shared dokken92/dolfinx_mpc:0.1.0
 ```
 
 (DOLFINx MPC provides for periodic boundary conditions. At present, stock

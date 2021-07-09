@@ -1,0 +1,14 @@
+#!/bin/bash
+# Basic---colorful---prompt for Docker sessions
+
+force_color_prompt=yes
+
+BLUE='\[\e[0;34m\]'
+GREEN='\[\e[0;92m\]'
+MAGENTA='\[\e[1;35m\]'
+NONE='\[\e[0m\]'
+RED='\[\e[0;31m\]'
+
+export PS1="${BLUE}«${RED}docker${BLUE}»${GREEN}#${NONE} "
+alias ls='ls --color=auto'
+alias ll="ls -la"
