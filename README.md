@@ -8,41 +8,36 @@ The basic code for this implementation is lifted from the
 Cahn-Hilliard example provided by the [DOLFINx Docs](
 https://docs.fenicsproject.org/dolfinx/main/python/demos/cahn-hilliard/demo_cahn-hilliard.py.html).
 
-## DOLFINx
+> *N.B.:* DOLFINx does not currently support resuming a simulation from the
+>         XDMF/HDF5 checkpoint files it writes. This is a severe deficiency.
 
-I use the Spack package for ease of installation. Note that
-it requires a relatively new version of GCC: I have found
-`gcc-10.3.0` works well. To install it, do
+## DOLFINx & Singularity
 
-```bash
-$ spack install gcc@10.3.0
-$ spack compiler add $(spack location -i gcc@10.3.0)
-$ spack compiler find
-```
+I use Singularity to run the nightly DOLFINx build from [DockerHub]
+(https://hub.docker.com/r/dolfinx/dolfinx/tags?page=1&ordering=last_updated)
+inside a Conda environment. The [`Makefile`](Makefile) reflects this
+environment.
 
-Then you should be able to follow the [Spack instructions](
-https://github.com/FEniCS/dolfinx#spack) without too much
-more difficulty.
-
-### Docker
-
-Ugh, the Spack install might break? Dunno why/how/wtf. You can run the nightly
-build using
-
-```bash
-$ docker pull dolfinx/dolfinx
-$ docker run -e PYTHONUNBUFFERED=1 -ti -v $(pwd):/root/shared -w /root/shared dolfinx/dolfinx
-```
+* Install Miniconda and Mamba (better dependency resolver)
+  ```bash
+  $ curl -O https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+  $ chmod +x Miniconda3-latest-Linux-x86_64.sh
+  $ ./Miniconda3-latest-Linux-x86_64.sh
+  «agree to EULA, specify install dir, and prepare your shell»
+  $ conda install mamba -n base -c conda-forge
+  ```
+* Create and activate an environment containing Singularity
+  ```bash
+  $ mamba create -n sing python=3 singularity
+  $ conda activate sing
+  ```
+* Move to the benchmark directory and run the benchmark
+  ```bash
+  $ cd ~/path/to/dolfinx-bm1-spinodal
+  $ make
+  ```
 
 ## DOLFINx-MPC
 
-Visit the [DOLFINx MPC repo](https://github.com/jorgensd/dolfinx_mpc)
-for details on installation. Docker is preferred. `cd` to your preferred
-working directory, then invoke
-
-```bash
-$ docker run -e PYTHONUNBUFFERED=1 -ti -v $(pwd):/root/shared -w /root/shared dokken92/dolfinx_mpc:0.1.0
-```
-
-(DOLFINx MPC provides for periodic boundary conditions. At present, stock
-DOLFINx does not.)
+DOLFINx MPC provides for periodic boundary conditions. At present, stock
+DOLFINx does not.
