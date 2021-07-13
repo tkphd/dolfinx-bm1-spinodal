@@ -1,25 +1,47 @@
 # GNU Makefile for PFHub BM1
+# Recommended for use with a Conda environment for Singularity with Python 3
 
+# Cluster Settings
+
+MPI = mpirun
+PY3 = python3
 RANKS = 4
 
-all: spinodal
-.PHONY: all docker-launch docker-run spinodal updock watcher clean
+# Container Settings
 
-docked: spinodal.py
-	docker run --name fenicsx --rm -ti -v $(PWD):/root/shared -w /root/shared dolfinx/dolfinx bash --init-file .docker-prompt
+IMAGE = dolfinx/dolfinx
+NAME = fenicsx
 
-spinodal: spinodal.py
-	$(MAKE) clean
-	mpirun -np $(RANKS) python3 -u spinodal.py
+# Make Targets
 
-#spinodal: spinodal.py
-#	mpirun -np $(RANKS) --mca opal_cuda_support 0 python -u spinodal.py
+all: dolfinx-bm-1b.xdmf
+.PHONY: all clean instance list shell spinodal stop watch
 
-updock:
-	docker pull dolfinx/dolfinx
-
-watcher:
-	docker exec -t fenicsx bash -c "watch cat dolfinx-bm-1b.csv; exit"
+dolfinx-bm-1b.xdmf: spinodal.py
+	make instance
+	make spinodal
+	make stop
 
 clean:
 	rm -vf *spinodal.h5 *spinodal.xdmf *spinodal.log dolfinx*.csv
+
+instance:
+	singularity instance start -H $(PWD) docker://$(IMAGE) $(NAME)
+
+list:
+	singularity instance list
+
+shell:
+	singularity exec instance://$(NAME) bash --init-file .singular-prompt
+
+spinodal: spinodal.py
+	singularity exec instance://$(NAME) $(MPI) -np $(RANKS) $(PY3) -u spinodal.py
+
+stop:
+	singularity instance stop $(NAME)
+
+watch:
+	singularity exec instance://$(NAME) bash -c "watch cat dolfinx-bm-1b.csv"
+
+#docker:
+#	docker run --name $(NAME) --rm -ti -v $(PWD):/root/shared -w /root/shared $(IMAGE) bash --init-file .singular-prompt

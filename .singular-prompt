@@ -1,5 +1,5 @@
 #!/bin/bash
-# Basic---colorful---prompt for Docker sessions
+# Basic---colorful---prompt for containers
 
 force_color_prompt=yes
 
@@ -9,6 +9,6 @@ MAGENTA='\[\e[1;35m\]'
 NONE='\[\e[0m\]'
 RED='\[\e[0;31m\]'
 
-export PS1="${BLUE}«${RED}docker${BLUE}»${GREEN}#${NONE} "
+export PS1="${BLUE}«${RED}singularity${BLUE}»${GREEN}#${NONE} "
 alias ls='ls --color=auto'
 alias ll="ls -la"

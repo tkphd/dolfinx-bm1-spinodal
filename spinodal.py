@@ -14,8 +14,10 @@ Endpoint detection based on Δ𝜇 is borrowed from @smondal44,
 <https://github.com/smondal44/spinodal-decomposition>
 
 Usage:  mpirun -np 4 --mca opal_cuda_support 0 python -u cahn-hilliard.py
-
 """
+
+from mpi4py import MPI
+epoch = MPI.Wtime()
 
 import csv
 from datetime import timedelta
@@ -25,18 +27,16 @@ import queue
 
 from dolfinx import Form, Function, FunctionSpace, NewtonSolver, RectangleMesh
 from dolfinx import fem, log
-
 from dolfinx.cpp.mesh import CellType
 from dolfinx.fem.problem import NonlinearProblem
 from dolfinx.fem.assemble import assemble_matrix, assemble_scalar, assemble_vector
 from dolfinx.io import XDMFFile
-from mpi4py import MPI
+from os import path
 from petsc4py import PETSc
+from sys import argv
 from ufl import FiniteElement, Measure, TestFunctions, TrialFunction
 from ufl import derivative, diff, grad, inner, split, variable
 from ufl import dx as Δ𝑥
-
-epoch = MPI.Wtime()
 
 # Model parameters
 𝜅 = 2  # gradient energy coefficient
@@ -50,17 +50,25 @@ epoch = MPI.Wtime()
 # Discretization parameters
 𝑊 = 200  # width
 𝑁 = 400  # cells
+𝑡 = 0.0  # simulation time
 Δ𝑡 = 0.125  # timestep
 𝑇 = 1e6  # simulation timeout
+
+if len(argv) == 2:
+    if np.isfinite(int(argv[1])):
+        𝑇 = int(argv[1])
 
 p_deg = 2  # element/polynomial degree
 q_deg = 4  # quadrature_degree
 
-# Output
+# Output -- check if there's already data here
 log.set_output_file("dolfinx-spinodal.log")
 bm1_log = "dolfinx-bm-1b.csv"
-xdmf_file = "dolfinx-spinodal.xdmf"
+xdmf_file = "dolfinx-bm-1b.xdmf"
+resuming = path.isfile(xdmf_file)
 
+COMM = MPI.COMM_WORLD
+rank = MPI.COMM_WORLD.Get_rank()
 
 class CahnHilliardEquation(NonlinearProblem):
     def __init__(self, F, x):
@@ -75,18 +83,19 @@ class CahnHilliardEquation(NonlinearProblem):
     def vector(self):
         return fem.create_vector(self.L)
 
+def print0(s):
+    if rank == 0:
+        print(s)
 
-# Create mesh & element basis
 𝛀 = RectangleMesh(
-    MPI.COMM_WORLD,
+    COMM,
     [np.array([0, 0, 0]), np.array([𝑊, 𝑊, 0])],
     [𝑁, 𝑁],
     CellType.triangle,
     diagonal="crossed",
 )
 
-MPI_COMM_WORLD = 𝛀.mpi_comm()
-rank = MPI_COMM_WORLD.Get_rank()
+COMM = 𝛀.mpi_comm()
 
 LE = FiniteElement("Lagrange", 𝛀.ufl_cell(), p_deg)
 
@@ -123,7 +132,7 @@ L1 = inner(𝜇, 𝑣) * Δ𝑥 - inner(𝑓, 𝑣) * Δ𝑥 - 𝜅 * inner(grad
 # === Solver ===
 
 problem = CahnHilliardEquation(𝐿, 𝒖)
-solver = NewtonSolver(MPI.COMM_WORLD, problem)
+solver = NewtonSolver(COMM, problem)
 solver.setF(problem.F, problem.vector())
 solver.setJ(problem.J, problem.matrix())
 solver.convergence_criterion = "incremental"
@@ -158,8 +167,11 @@ noisy = lambda x: 𝜁 + 𝜀 * (
 
 𝒖.sub(0).interpolate(noisy)
 
-with XDMFFile(MPI.COMM_WORLD, xdmf_file, "w") as xdmf:
-    xdmf.write_mesh(𝛀)
+with XDMFFile(COMM, xdmf_file, "w") as xdmf:
+    try:
+        xdmf.write_mesh(𝛀)
+    except IOError as e:
+        MPI.Abort(e)
 
 𝒖.vector.copy(result=𝒖0.vector)
 𝒖0.vector.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
@@ -177,7 +189,6 @@ for n in np.arange(0, 7):
         if t_out <= 𝑇:
             io_q.put(t_out)
 
-𝑡 = 0.0
 start = MPI.Wtime()
 
 
@@ -187,12 +198,12 @@ def crunch_the_numbers(𝛀, 𝑡, 𝑐, 𝜇, 𝜆, r, τ):
         𝜌 * (𝑐 - 𝛼) ** 2 * (𝛽 - 𝑐) ** 2 * Δ𝑥 + 0.5 * 𝜅 * inner(grad(𝑐), grad(𝑐)) * Δ𝑥
     )
     𝜂 = assemble_scalar(np.abs(𝜇 - 𝜆) * Δ𝑥)
-    𝑛 = MPI_COMM_WORLD.allreduce(len(𝛀.geometry.x), op=MPI.SUM)
+    𝑛 = COMM.allreduce(len(𝛀.geometry.x), op=MPI.SUM)
 
-    𝐜 = MPI_COMM_WORLD.allreduce(𝒎 / 𝑛, op=MPI.SUM)
-    𝐅 = MPI_COMM_WORLD.allreduce(𝓕, op=MPI.SUM)
-    𝛈 = MPI_COMM_WORLD.allreduce(𝜂 / 𝑛, op=MPI.SUM)
-    𝐫 = MPI_COMM_WORLD.allreduce(r, op=MPI.MAX)
+    𝐜 = COMM.allreduce(𝒎 / 𝑛, op=MPI.SUM)
+    𝐅 = COMM.allreduce(𝓕, op=MPI.SUM)
+    𝛈 = COMM.allreduce(𝜂 / 𝑛, op=MPI.SUM)
+    𝐫 = COMM.allreduce(r, op=MPI.MAX)
     𝛕 = MPI.Wtime() - τ
 
     return (𝑡, 𝐜, 𝐅, 𝛈, 𝐫, 𝛕)
@@ -201,8 +212,6 @@ def crunch_the_numbers(𝛀, 𝑡, 𝑐, 𝜇, 𝜆, r, τ):
 def write_csv_header(filename):
 	if rank == 0:
 	    with open(filename, mode="w") as nrg_file:
-                io = csv.writer(nrg_file)
-
                 header = [
                     "time",
                     "composition",
@@ -212,15 +221,20 @@ def write_csv_header(filename):
                     "runtime",
                 ]
 
-                io.writerow(header)
-
+                try:
+                    io = csv.writer(nrg_file)
+                    io.writerow(header)
+                except IOError as e:
+                    MPI.Abort(e)
 
 def write_csv_summary(filename, summary):
 	if rank == 0:
 	    with open(filename, mode="a") as nrg_file:
-                io = csv.writer(nrg_file)
-                io.writerow(summary)
-
+                try:
+                    io = csv.writer(nrg_file)
+                    io.writerow(summary)
+                except IOError as e:
+                    MPI.Abort(e)
 
 write_csv_header(bm1_log)
 write_csv_summary(bm1_log, crunch_the_numbers(𝛀, 𝑡, 𝑐, 𝜇, 𝜆, 0, start))
@@ -228,12 +242,9 @@ write_csv_summary(bm1_log, crunch_the_numbers(𝛀, 𝑡, 𝑐, 𝜇, 𝜆, 0, s
 Δ𝜇 = 1.0
 io_t = io_q.get()
 
-if rank == 0:
-    print(
-        "[{}] Next summary at 𝑡={}".format(
-            timedelta(seconds=(MPI.Wtime() - epoch)), io_t
-        )
-    )
+print0("[{}] Next summary at 𝑡={}".format(
+        timedelta(seconds=(MPI.Wtime() - epoch)), io_t)
+)
 
 while (Δ𝜇 > 1e-8) and (𝑡 < 𝑇):
     𝑡 += Δ𝑡
@@ -242,25 +253,22 @@ while (Δ𝜇 > 1e-8) and (𝑡 < 𝑇):
 
     if np.isclose(𝑡, io_t) or 𝑡 > io_t:
 
-        with XDMFFile(MPI.COMM_WORLD, xdmf_file, "a") as xdmf:
-            xdmf.write_function(𝒖.sub(0), 𝑡)
+        with XDMFFile(COMM, xdmf_file, "a") as xdmf:
+            try:
+                xdmf.write_function(𝒖.sub(0), 𝑡)
+            except IOError as e:
+                MPI.Abort(e)
 
         write_csv_summary(bm1_log, crunch_the_numbers(𝛀, 𝑡, 𝑐, 𝜇, 𝜆, r, start))
 
         io_t = io_q.get()
 
-        if rank == 0:
-            print(
-                "[{}] Next summary at 𝑡={}".format(
-                    timedelta(seconds=(MPI.Wtime() - epoch)), io_t
-                )
-            )
+        print0("[{}] Next summary at 𝑡={}".format(
+                timedelta(seconds=(MPI.Wtime() - epoch)), io_t)
+        )
 
         gc.collect()
 
-with XDMFFile(MPI.COMM_WORLD, xdmf_file, "a") as xdmf:
-    xdmf.write_function(𝒖.sub(0), 𝑡)
-
 write_csv_summary(bm1_log, crunch_the_numbers(𝛀, 𝑡, 𝑐, 𝜇, 𝜆, r, start))
 
-print("Finished simulation after {} s.".format(MPI.Wtime() - epoch))
+print0("Finished simulation after {} s.".format(MPI.Wtime() - epoch))
